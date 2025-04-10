@@ -196,6 +196,10 @@ struct MovieListView: View {
 
 ### Video
 
+Demo pagination of `10000` records.
+
+https://github.com/user-attachments/assets/ae23a398-b28c-4bed-9fee-7d244a142b44
+
 ## Contributing
 
 Contributions are always welcome! Feel free to submit a pull request or open an issue for any suggestions or improvements you have.
