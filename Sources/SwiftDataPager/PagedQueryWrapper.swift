@@ -26,6 +26,7 @@ import SwiftData
 ///     logger: .default
 /// ) private var items: [MyModel]
 /// ```
+@MainActor
 @propertyWrapper
 public struct PagedQuery<Model>: DynamicProperty where Model: PersistentModel {
     
@@ -154,15 +155,25 @@ extension PagedQuery {
 // MARK: - Public API
 
 extension PagedQuery {
-    
-    /// Triggers an initial fetch if the state is idle and no items are loaded.
-    public func update() {
-        if fetchOffset == 0 && items.isEmpty && state.isIdle {
-            logger.log("Paginated.update detected initial state, triggering loadMore.")
-            loadMore()
+
+    /// Automatically invoked by SwiftUI when the view’s state changes.
+    ///
+    /// This method is required by `DynamicProperty` and is called by the SwiftUI runtime.
+    /// Because SwiftUI may call this method from a background thread, it is marked `nonisolated`
+    /// and safely dispatches any main-thread work.
+    ///
+    /// You generally don’t need to call this directly. Instead, rely on SwiftUI to trigger it
+    /// when your property wrapper is used in a view.
+    ///
+    /// If the internal pagination state indicates no items have been loaded yet and a fetch is allowed,
+    /// it triggers an initial call to `loadMore()`.
+    nonisolated public func update() {
+        // Dispatch the safe part to the main actor
+        Task { @MainActor in
+            self._performAutoLoadIfNeeded()
         }
     }
-    
+
     /// Loads the next page of results if appropriate.
     public func loadMore() {
         
@@ -187,7 +198,9 @@ extension PagedQuery {
         logger.log("Initiating fetch task for offset: \(fetchOffset)")
         
         // Kick off the asynchronous fetch for the next page.
-        Task { await fetchPage(startingAt: fetchOffset) }
+        Task { @MainActor in
+            await fetchPage(startingAt: fetchOffset)
+        }
     }
     
     /// Resets pagination and triggers a fresh initial load.
@@ -214,7 +227,22 @@ extension PagedQuery {
 // MARK: - Private API
 
 extension PagedQuery {
-    
+
+    /// Performs an initial paginated fetch if no items have been loaded yet.
+    ///
+    /// This method is dispatched from the nonisolated `update()` method and safely runs
+    /// on the main actor. It checks if the current pagination state is idle and no data
+    /// has been loaded yet, and if so, triggers a `loadMore()` call to begin fetching.
+    ///
+    /// This ensures that paginated queries start automatically when a view appears
+    /// and SwiftUI triggers its lifecycle updates.
+    private func _performAutoLoadIfNeeded() {
+        if fetchOffset == 0 && items.isEmpty && state.isIdle {
+            logger.log("PagedQuery.update: triggering initial loadMore()")
+            loadMore()
+        }
+    }
+
     /// Asynchronously fetches a page of data starting at a given offset.
     ///
     /// - Parameter offset: The offset from which to begin fetching items.

@@ -27,7 +27,8 @@ let package = Package(
             dependencies: ["SimpleLogger"],
             exclude: [],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency")
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures")
             ]
         )
     ]
