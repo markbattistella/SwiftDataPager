@@ -198,7 +198,7 @@ struct MovieListView: View {
 
 Demo pagination of `10000` records.
 
-https://github.com/user-attachments/assets/ae23a398-b28c-4bed-9fee-7d244a142b44
+[![SwiftDataPager Demo](https://img.youtube.com/vi/amlm-rkMVTI/maxresdefault.jpg)](https://www.youtube.com/watch?v=amlm-rkMVTI)
 
 ## Contributing
 
