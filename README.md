@@ -21,15 +21,31 @@ By providing property wrappers and view modifiers, `SwiftDataPager` makes infini
 
 ## Features
 
+- Property-wrapper based paginated SwiftData fetches.
+- Optional sort descriptors and predicates.
+- Infinite-scroll view modifiers for last-item, threshold, custom, and empty-list loading.
+- Fetching, end-of-results, retry, reset, and error state access.
+- Optional SimpleLogger-backed logging or custom logger integration.
+
 ## Installation
 
 Add `SwiftDataPager` to your Swift project using Swift Package Manager.
 
 ```swift
 dependencies: [
-  .package(url: "https://github.com/markbattistella/SwiftDataPager", from: "1.0.0")
+  .package(url: "https://github.com/markbattistella/SwiftDataPager", from: "26.2.21")
 ]
 ```
+
+## Requirements
+
+- Swift 6.0+
+- iOS 17.0+
+- macOS 14.0+
+- Mac Catalyst 17.0+
+- tvOS 17.0+
+- watchOS 10.0+
+- visionOS 1.0+
 
 ## Usage
 
@@ -155,7 +171,7 @@ struct MovieListView: View {
   @PagedQuery(
     fetchLimit: 100,
     sortDescriptors: [.init(\Movie.name)],
-    filterPredicate: #Predicate { $0.name.contains("AU") },
+    filterPredicate: #Predicate { $0.name.localizedStandardContains("AU") },
     logger: .default
   ) private var movies: [Movie]
 
@@ -170,22 +186,22 @@ struct MovieListView: View {
       .navigationTitle("Movies")
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
-          if $items.isFetching {
+          if $movies.isFetching {
             ProgressView()
-              .showFetching(in: $items)
+              .showFetching(in: $movies)
           }
         }
         ToolbarItem(placement: .topBarTrailing) {
-          if $items.hasReachedEnd {
+          if $movies.hasReachedEnd {
             Text("All done!")
               .font(.footnote)
               .foregroundStyle(.secondary)
           }
         }
         ToolbarItem(placement: .bottomBar) {
-          if let error = $items.error {
+          if let error = $movies.error {
             Text("Error: \(error.localizedDescription)")
-              .foregroundColor(.red)
+              .foregroundStyle(.red)
           }
         }
       }
