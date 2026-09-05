@@ -44,11 +44,15 @@ public struct SilentPaginationLogger: PaginationLogger {
 
 /// A default logger that routes pagination messages through a `SimpleLogger`.
 ///
-/// Uses `.swiftData` as the log category. Logs both debug and error messages.
+/// Uses `.swiftData` as the log category by default. Logs both debug and error messages.
 public struct DefaultPaginationLogger: PaginationLogger {
-  private let logger = SimpleLogger(category: .swiftData)
+  private let logger: SimpleLogger
 
-  public init() {}
+  /// - Parameter category: The `SimpleLogger` category pagination events are logged under.
+  ///   Defaults to `.swiftData`.
+  public init(category: LoggerCategory = .swiftData) {
+    self.logger = SimpleLogger(category: category)
+  }
 
   public func log(_ message: @autoclosure () -> String) {
     let value = message()

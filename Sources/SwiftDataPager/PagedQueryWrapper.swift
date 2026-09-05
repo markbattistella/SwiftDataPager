@@ -7,10 +7,13 @@
 import SwiftData
 import SwiftUI
 
-/// A property wrapper that provides a paginated query interface for any `PersistentModel`.
+/// A property wrapper that provides a paginated, **live** query interface for any
+/// `PersistentModel`.
 ///
-/// `PagedQuery` handles incremental data loading, maintains pagination state, and tracks
-/// fetch errors or completion. Ideal for use in SwiftUI views where on-demand loading is needed.
+/// `PagedQuery` is a thin, ergonomic wrapper around SwiftData's `@Query`: internally it grows
+/// the fetched window as `loadMore()` is called, so results stay live — inserts, edits, and
+/// deletes made anywhere against the same `ModelContext` are reflected automatically, with no
+/// manual refresh or reset required.
 ///
 /// ### Basic usage:
 /// ```swift
@@ -28,46 +31,21 @@ import SwiftUI
 /// ```
 @MainActor
 @propertyWrapper
-public struct PagedQuery<Model>: DynamicProperty where Model: PersistentModel {
+public struct PagedQuery<Model>: @MainActor DynamicProperty where Model: PersistentModel {
 
-  /// Access to the SwiftData model context used for fetching.
-  @Environment(\.modelContext) private var modelContext
+  /// The live, window-limited fetch. Grows by `pageSize` each time `loadMore()` is called.
+  ///
+  /// The descriptor's `fetchLimit` is always `window + 1`: the extra row is never exposed
+  /// through `wrappedValue`, but its presence is how `hasReachedEnd` is answered without an
+  /// extra count query.
+  @Query private var rawItems: [Model]
 
-  /// The list of items fetched so far.
-  @State private var items: [Model] = []
+  /// How many items are currently within the fetch window (excludes the one-row peek used to
+  /// detect the end of the data).
+  @State private var window: Int
 
-  /// Keeps track of the current fetch offset (i.e. how many items have been fetched so far).
-  @State private var fetchOffset: Int = 0
-
-  /// Tracks the current state of pagination: idle, fetching, all loaded, or error.
-  @State private(set) var state: PaginationState = .idle
-
-  /// The currently scheduled page fetch.
-  @State private var fetchTask: Task<Void, Never>?
-
-  /// Increments whenever in-flight work should be ignored.
-  @State private var fetchGeneration: Int = 0
-
-  /// The current list of loaded models.
-  public var wrappedValue: [Model] { items }
-
-  /// A reference to the full `PagedQuery`, exposing control methods.
-  public var projectedValue: PagedQuery<Model> { self }
-
-  /// Indicates whether a fetch operation is currently in progress.
-  public var isFetching: Bool { state.isFetching }
-
-  /// Indicates whether all data has been loaded.
-  public var hasReachedEnd: Bool { state.isAllLoaded }
-
-  /// Returns the most recent error encountered during a fetch, if any.
-  public var error: Error? {
-    if case .error(let error) = state { return error }
-    return nil
-  }
-
-  /// The number of items to fetch per page.
-  private let fetchLimit: Int
+  /// The number of items to grow the window by each time `loadMore()` is called.
+  private let pageSize: Int
 
   /// The sort descriptors to apply during fetching.
   private let sortDescriptors: [SortDescriptor<Model>]
@@ -77,53 +55,19 @@ public struct PagedQuery<Model>: DynamicProperty where Model: PersistentModel {
 
   /// Logging utility for pagination events.
   internal let logger: any PaginationLogger
-}
 
-// MARK: - Pagination State
+  /// The current list of loaded models.
+  public var wrappedValue: [Model] { Array(rawItems.prefix(window)) }
 
-extension PagedQuery {
+  /// A reference to the full `PagedQuery`, exposing control methods.
+  public var projectedValue: PagedQuery<Model> { self }
 
-  /// Internal enum tracking the pagination lifecycle.
-  internal enum PaginationState {
+  /// Indicates whether all matching data has been loaded — i.e. the underlying store has no
+  /// more rows beyond the current window.
+  public var hasReachedEnd: Bool { rawItems.count <= window }
 
-    /// No fetch in progress. Ready to load.
-    case idle
-
-    /// A fetch is currently in progress.
-    case fetching
-
-    /// All matching items have been fetched; no more pages left.
-    case allLoaded
-
-    /// An error occurred during the last fetch attempt.
-    ///
-    /// - Parameter Error: The error returned from the fetch operation.
-    case error(Error)
-
-    /// Returns true if no fetch is in progress and more data may be available.
-    var isIdle: Bool {
-      if case .idle = self { return true }
-      return false
-    }
-
-    /// Returns true if a fetch operation is actively in progress.
-    var isFetching: Bool {
-      if case .fetching = self { return true }
-      return false
-    }
-
-    /// Returns true if all pages have been fetched.
-    var isAllLoaded: Bool {
-      if case .allLoaded = self { return true }
-      return false
-    }
-
-    /// Returns true if the state is currently an error.
-    var isError: Bool {
-      if case .error = self { return true }
-      return false
-    }
-  }
+  /// The current pagination phase.
+  public var phase: Phase { hasReachedEnd ? .complete : .idle }
 }
 
 // MARK: - Init
@@ -133,7 +77,8 @@ extension PagedQuery {
   /// Creates a new `PagedQuery` instance.
   ///
   /// - Parameters:
-  ///   - fetchLimit: Number of items to fetch per page. Defaults to `10`.
+  ///   - fetchLimit: Number of items to fetch initially, and to grow the window by on each
+  ///     `loadMore()` call. Defaults to `10`.
   ///   - sortDescriptors: Sorting applied during fetch. Defaults to `empty`.
   ///   - filterPredicate: Optional filter to apply to results. Defaults to `nil`.
   ///   - logger: Logging configuration. Defaults to `.none`.
@@ -143,9 +88,11 @@ extension PagedQuery {
     filterPredicate: Predicate<Model>? = nil,
     logger: PaginationLoggerConfig = .none
   ) {
-    self.fetchLimit = max(1, fetchLimit)
+    let pageSize = max(1, fetchLimit)
+    self.pageSize = pageSize
     self.sortDescriptors = sortDescriptors
     self.filterPredicate = filterPredicate
+    self._window = State(initialValue: pageSize)
 
     switch logger {
     case .none:
@@ -155,6 +102,12 @@ extension PagedQuery {
     case .custom(let customLogger):
       self.logger = customLogger
     }
+
+    self._rawItems = Query(Self.descriptor(
+      window: pageSize,
+      predicate: filterPredicate,
+      sortDescriptors: sortDescriptors
+    ))
   }
 }
 
@@ -162,199 +115,60 @@ extension PagedQuery {
 
 extension PagedQuery {
 
-  /// Automatically invoked by SwiftUI when the view’s state changes.
+  /// Automatically invoked by SwiftUI when the view's state changes.
   ///
-  /// This method is required by `DynamicProperty` and is called by the SwiftUI runtime.
-  /// Because SwiftUI may call this method from a background thread, it is marked `nonisolated`
-  /// and safely dispatches any main-thread work.
-  ///
-  /// You generally don’t need to call this directly. Instead, rely on SwiftUI to trigger it
-  /// when your property wrapper is used in a view.
-  ///
-  /// If the internal pagination state indicates no items have been loaded yet and a fetch is allowed,
-  /// it triggers an initial call to `loadMore()`.
-  nonisolated public func update() {
-    // Dispatch the safe part to the main actor
-    Task { @MainActor in
-      self._performAutoLoadIfNeeded()
-    }
+  /// This rebuilds the underlying `@Query`'s fetch descriptor from the current window size on
+  /// every call, so the live query always reflects the latest `loadMore()`/`reset()` state —
+  /// this can't be done inside `init()` alone, since `init()` re-runs on every unrelated
+  /// re-render without visibility into `window`'s current, persisted value.
+  public mutating func update() {
+    _rawItems.update()
+    _rawItems = Query(Self.descriptor(
+      window: window,
+      predicate: filterPredicate,
+      sortDescriptors: sortDescriptors
+    ))
   }
 
-  /// Loads the next page of results if appropriate.
+  /// Grows the fetch window by `fetchLimit`, revealing the next page of already-live results.
+  ///
+  /// Because the underlying data is a live `@Query`, this never triggers a network- or
+  /// disk-bound wait — it simply widens the window SwiftData is already observing.
   public func loadMore() {
-
-    // Don't fetch if we've already reached the end of the available data.
-    if hasReachedEnd {
-      logger.log("Fetch skipped — already at end.")
+    guard !hasReachedEnd else {
+      logger.log("loadMore skipped — already at end.")
       return
     }
-
-    // Avoid triggering multiple concurrent fetches.
-    guard !isFetching else {
-      logger.log("Fetch skipped - already fetching.")
-      return
-    }
-
-    // Skip if currently in error state. Use `retry()` to attempt again.
-    guard !state.isError else {
-      logger.log("Fetch skipped - currently in error state. Use retry().")
-      return
-    }
-
-    let offset = fetchOffset
-    let generation = fetchGeneration
-    state = .fetching
-
-    logger.log("Initiating fetch task for offset: \(offset)")
-
-    // Kick off the asynchronous fetch for the next page.
-    fetchTask = Task { @MainActor in
-      await fetchPage(startingAt: offset, generation: generation)
-    }
+    window += pageSize
+    logger.log("Window increased to \(window).")
   }
 
-  /// Resets pagination and triggers a fresh initial load.
+  /// Resets the fetch window back to its initial size.
+  ///
+  /// Call this when switching to a meaningfully different scope (e.g. a different parent
+  /// record) if you want the view to start from a small window again. Correctness does not
+  /// depend on calling this — changing `filterPredicate`/`sortDescriptors` always re-executes
+  /// the live query against the new arguments — this only affects how large the *first* page
+  /// under the new scope is.
   public func reset() {
-    fetchGeneration += 1
-    fetchTask?.cancel()
-    fetchTask = nil
-    items = []
-    fetchOffset = 0
-    state = .idle
-    logger.log("Reset pagination state. Triggering initial load.")
-    loadMore()
-  }
-
-  /// Retries a failed fetch operation if currently in an error state.
-  public func retry() {
-    if case .error = state {
-      logger.log("Retry triggered.")
-      state = .idle
-      loadMore()
-    } else {
-      logger.log("Retry called but not in an error state.")
-    }
+    window = pageSize
+    logger.log("Reset pagination window to \(pageSize).")
   }
 }
 
-// MARK: - Private API
+// MARK: - Fetch descriptor
 
 extension PagedQuery {
 
-  /// Performs an initial paginated fetch if no items have been loaded yet.
-  ///
-  /// This method is dispatched from the nonisolated `update()` method and safely runs
-  /// on the main actor. It checks if the current pagination state is idle and no data
-  /// has been loaded yet, and if so, triggers a `loadMore()` call to begin fetching.
-  ///
-  /// This ensures that paginated queries start automatically when a view appears
-  /// and SwiftUI triggers its lifecycle updates.
-  private func _performAutoLoadIfNeeded() {
-    if fetchOffset == 0 && items.isEmpty && state.isIdle {
-      logger.log("PagedQuery.update: triggering initial loadMore()")
-      loadMore()
-    }
-  }
-
-  /// Asynchronously fetches a page of data starting at a given offset.
-  ///
-  /// - Parameter offset: The offset from which to begin fetching items.
-  @MainActor
-  private func fetchPage(startingAt offset: Int, generation: Int) async {
-
-    // Prevent duplicate or unnecessary fetches due to race conditions or state drift.
-    guard !Task.isCancelled, generation == fetchGeneration else {
-      logger.log("Fetch task ignored because pagination was reset or cancelled.")
-      return
-    }
-    defer {
-      if generation == fetchGeneration {
-        fetchTask = nil
-      }
-    }
-
-    guard state.isFetching, !state.isAllLoaded, !state.isError else {
-      logger.log(
-        """
-        Fetch task started but state changed before execution
-         - isFetching: \(state.isFetching)
-         - isAllLoaded: \(state.isAllLoaded)
-         - isError: \(state.isError)
-        Aborting fetch.
-        """)
-      return
-    }
-
-    logger.log("Fetching page starting at offset: \(offset), limit: \(fetchLimit)")
-
-    do {
-
-      // Build the descriptor that defines how we fetch our next page of items.
-      var descriptor = FetchDescriptor<Model>(
-        predicate: filterPredicate,
-        sortBy: sortDescriptors
-      )
-
-      // Separate descriptor to count the total number of matching items.
-      let countDescriptor = FetchDescriptor<Model>(predicate: filterPredicate)
-
-      // Get the total number of items that match our filter.
-      let totalItemCount = try modelContext.fetchCount(countDescriptor)
-
-      let safeOffset = min(min(totalItemCount, offset), items.count)
-
-      descriptor.fetchLimit = fetchLimit
-      descriptor.fetchOffset = safeOffset
-
-      // Fetch the next page of data using the descriptor.
-      let newItems = try modelContext.fetch(descriptor)
-
-      guard !Task.isCancelled, generation == fetchGeneration else {
-        logger.log("Fetched page ignored because pagination was reset or cancelled.")
-        return
-      }
-
-      // Append the newly fetched items to the list.
-      items.append(contentsOf: newItems)
-
-      // Move the offset forward by however many items we just fetched.
-      fetchOffset += newItems.count
-
-      // Log useful debug info — great for tracking fetch behaviour over time.
-      logger.log(
-        """
-        Page fetched:
-         - Fetched this round: \(newItems.count)
-         - Fetched total: \(items.count)
-         - Available total (matching predicate): \(totalItemCount)
-         - Offset now: \(fetchOffset)
-        """)
-
-      // Decide what state to enter based on how many items we’ve got.
-      if items.count >= totalItemCount {
-
-        state = .allLoaded
-        logger.log("All items loaded.")
-
-      } else if newItems.isEmpty && items.count > 0 {
-
-        // Edge case: no new results, but we’ve already got some — assume we’re done.
-        state = .allLoaded
-        logger.log("Fetched 0 new items, assuming end of list.")
-
-      } else {
-
-        // More items may still be available, back to idle.
-        state = .idle
-      }
-
-    } catch {
-
-      // Any error fetching count or page gets logged and bumps us to error state.
-      logger.error("Fetch error: \(error.localizedDescription)")
-      if generation == fetchGeneration {
-        state = .error(error)
-      }
-    }
+  nonisolated static func descriptor(
+    window: Int,
+    predicate: Predicate<Model>?,
+    sortDescriptors: [SortDescriptor<Model>]
+  ) -> FetchDescriptor<Model> {
+    var descriptor = FetchDescriptor<Model>(predicate: predicate, sortBy: sortDescriptors)
+    // Fetch one extra row beyond the window so `hasReachedEnd` can be answered without a
+    // separate `fetchCount` query.
+    descriptor.fetchLimit = window + 1
+    return descriptor
   }
 }

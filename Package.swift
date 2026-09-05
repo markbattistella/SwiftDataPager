@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 import PackageDescription
 
@@ -24,11 +24,12 @@ let package = Package(
   targets: [
     .target(
       name: "SwiftDataPager",
-      dependencies: ["SimpleLogger"],
-      swiftSettings: [
-        .swiftLanguageMode(.v6)
-      ]
-    )
+      dependencies: ["SimpleLogger"]
+    ),
+    .testTarget(
+      name: "SwiftDataPagerTests",
+      dependencies: ["SwiftDataPager"]
+    ),
   ],
   swiftLanguageModes: [.v6]
 )
