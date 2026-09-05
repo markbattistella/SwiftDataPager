@@ -10,10 +10,10 @@ import SwiftUI
 /// A property wrapper that provides a paginated, **live** query interface for any
 /// `PersistentModel`.
 ///
-/// `PagedQuery` is a thin, ergonomic wrapper around SwiftData's `@Query`: internally it grows
-/// the fetched window as `loadMore()` is called, so results stay live — inserts, edits, and
-/// deletes made anywhere against the same `ModelContext` are reflected automatically, with no
-/// manual refresh or reset required.
+/// `PagedQuery` is a thin, ergonomic wrapper around SwiftData's `@Query`: it fetches up to
+/// `maxWindow` rows once, then widens the visible prefix as `loadMore()` is called. Results stay
+/// live — inserts, edits, and deletes made anywhere against the same `ModelContext` are reflected
+/// automatically, with no manual refresh or reset required.
 ///
 /// ### Basic usage:
 /// ```swift
@@ -33,21 +33,27 @@ import SwiftUI
 @MainActor
 @propertyWrapper
 public struct PagedQuery<Model>: @MainActor DynamicProperty where Model: PersistentModel {
-    /// The live, window-limited fetch. Grows by `pageSize` each time `loadMore()` is called.
-    ///
-    /// The descriptor's `fetchLimit` is always `window + 1`: the extra row is never exposed
-    /// through `wrappedValue`, but its presence is how `hasReachedEnd` is answered without an
-    /// extra count query.
+    /// The live fetch, capped at `maxWindow`. Its descriptor is fixed for the lifetime of the
+    /// wrapper — see `update()` for why it must never be rebuilt after `init`.
     @Query
     private var rawItems: [Model]
 
-    /// How many items are currently within the fetch window (excludes the one-row peek used to
-    /// detect the end of the data).
+    /// How many of `rawItems` are currently exposed through `wrappedValue`. Grows by `pageSize`
+    /// each time `loadMore()` is called, up to `maxWindow`.
     @State
     private var window: Int
 
     /// The number of items to grow the window by each time `loadMore()` is called.
     private let pageSize: Int
+
+    /// The hard ceiling on how many rows this query will ever fetch.
+    ///
+    /// `Query` exposes no way to widen its `fetchLimit` after construction, and rebuilding the
+    /// `Query` value inside `update()` discards its fetched state (SwiftUI only installs
+    /// `Query`'s storage on values built during `init`). So the fetch is sized to this ceiling
+    /// once, up front, and pagination beyond that point is done client-side via
+    /// `rawItems.prefix(window)`. Rows beyond `maxWindow` are invisible to this query.
+    private let maxWindow: Int
 
     /// The sort descriptors to apply during fetching.
     private let sortDescriptors: [SortDescriptor<Model>]
@@ -84,6 +90,10 @@ extension PagedQuery {
     /// - Parameters:
     ///   - fetchLimit: Number of items to fetch initially, and to grow the window by on each
     ///     `loadMore()` call. Defaults to `10`.
+    ///   - maxWindow: The hard ceiling on how many rows will ever be fetched, regardless of how
+    ///     many times `loadMore()` is called. Rows beyond this ceiling are invisible to the
+    ///     query. Defaults to `500`; raise it if a screen legitimately needs to page further than
+    ///     that. Values below `fetchLimit` are clamped up to `fetchLimit`.
     ///   - sortDescriptors: Sorting applied during fetch. Defaults to `empty`.
     ///   - filterPredicate: Optional filter to apply to results. Defaults to `nil`.
     ///   - logger: Logging configuration. Defaults to `.none`.
@@ -91,13 +101,16 @@ extension PagedQuery {
     ///     fetched window. Defaults to `nil` (no animation), matching `@Query`'s own default.
     public init(
         fetchLimit: Int = 10,
+        maxWindow: Int = 500,
         sortDescriptors: [SortDescriptor<Model>] = [],
         filterPredicate: Predicate<Model>? = nil,
         logger: PaginationLoggerConfig = .none,
         animation: Animation? = nil
     ) {
         let pageSize = max(1, fetchLimit)
+        let resolvedMaxWindow = max(pageSize, maxWindow)
         self.pageSize = pageSize
+        self.maxWindow = resolvedMaxWindow
         self.sortDescriptors = sortDescriptors
         self.filterPredicate = filterPredicate
         self.animation = animation
@@ -114,7 +127,7 @@ extension PagedQuery {
 
         self._rawItems = Self.makeQuery(
             descriptor: Self.descriptor(
-                window: pageSize,
+                maxWindow: resolvedMaxWindow,
                 predicate: filterPredicate,
                 sortDescriptors: sortDescriptors
             ),
@@ -128,32 +141,29 @@ extension PagedQuery {
 extension PagedQuery {
     /// Automatically invoked by SwiftUI when the view's state changes.
     ///
-    /// This rebuilds the underlying `@Query`'s fetch descriptor from the current window size on
-    /// every call, so the live query always reflects the latest `loadMore()`/`reset()` state —
-    /// this can't be done inside `init()` alone, since `init()` re-runs on every unrelated
-    /// re-render without visibility into `window`'s current, persisted value.
+    /// This only forwards to the underlying `Query`'s own `update()` — it must **not** replace
+    /// `_rawItems` with a newly-built `Query` value here. SwiftUI installs a `Query`'s storage
+    /// (model context, fetched results) via the `DynamicProperty` machinery before `body` runs;
+    /// a `Query` constructed inside `update()` never gets that storage installed, so its fetched
+    /// results are always empty. `loadMore()`/`reset()` are handled entirely client-side instead
+    /// (see `wrappedValue`), which is why the fetch descriptor can stay fixed for the wrapper's
+    /// lifetime.
     public mutating func update() {
         _rawItems.update()
-        _rawItems = Self.makeQuery(
-            descriptor: Self.descriptor(
-                window: window,
-                predicate: filterPredicate,
-                sortDescriptors: sortDescriptors
-            ),
-            animation: animation
-        )
     }
 
-    /// Grows the fetch window by `fetchLimit`, revealing the next page of already-live results.
+    /// Grows the visible window by `fetchLimit`, revealing the next page of already-fetched
+    /// results, up to `maxWindow`.
     ///
     /// Because the underlying data is a live `@Query`, this never triggers a network- or
-    /// disk-bound wait — it simply widens the window SwiftData is already observing.
+    /// disk-bound wait — it simply widens the prefix of `rawItems` exposed through
+    /// `wrappedValue`.
     public func loadMore() {
         guard !hasReachedEnd else {
             logger.log("loadMore skipped — already at end.")
             return
         }
-        window += pageSize
+        window = min(window + pageSize, maxWindow)
         logger.log("Window increased to \(window).")
     }
 
@@ -173,15 +183,19 @@ extension PagedQuery {
 // MARK: - Fetch descriptor
 
 extension PagedQuery {
+    /// Builds the fixed fetch descriptor used for the wrapper's entire lifetime.
+    ///
+    /// `fetchLimit` is `maxWindow`, not the current window — the descriptor never changes after
+    /// `init`, so it's sized to the ceiling once. `hasReachedEnd` is answered by comparing
+    /// `rawItems.count` (which is `min(totalMatchingRows, maxWindow)`) against `window`, with no
+    /// separate `fetchCount` query needed.
     nonisolated static func descriptor(
-        window: Int,
+        maxWindow: Int,
         predicate: Predicate<Model>?,
         sortDescriptors: [SortDescriptor<Model>]
     ) -> FetchDescriptor<Model> {
         var descriptor = FetchDescriptor<Model>(predicate: predicate, sortBy: sortDescriptors)
-        // Fetch one extra row beyond the window so `hasReachedEnd` can be answered without a
-        // separate `fetchCount` query.
-        descriptor.fetchLimit = window + 1
+        descriptor.fetchLimit = maxWindow
         return descriptor
     }
 

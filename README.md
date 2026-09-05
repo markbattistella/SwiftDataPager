@@ -72,6 +72,12 @@ dependencies: [
 
 `fetchLimit` is both the size of the first page and how much the window grows by on each `loadMore()` call.
 
+`maxWindow` is a hard ceiling on how many rows will ever be fetched for this query, regardless of how many times `loadMore()` is called — it defaults to `500`. `Query` has no supported way to widen its `fetchLimit` after construction, so `PagedQuery` fetches up to `maxWindow` once and pages through that fetch client-side; rows beyond the ceiling are invisible to the query. Raise `maxWindow` if a screen legitimately needs to page further than the default:
+
+```swift
+@PagedQuery(fetchLimit: 50, maxWindow: 5_000) var movies: [Movie]
+```
+
 `animation` controls the animation SwiftData applies when rows enter, leave, or move within the fetched window — it's passed straight through to the underlying `@Query`. It defaults to `nil` (no animation), matching `@Query`'s own default, so existing call sites are unaffected.
 
 ## View Modifiers
@@ -217,6 +223,12 @@ struct MovieListView: View {
 Demo pagination of `10000` records.
 
 [![SwiftDataPager Demo](https://img.youtube.com/vi/amlm-rkMVTI/maxresdefault.jpg)](https://www.youtube.com/watch?v=amlm-rkMVTI)
+
+## Fixed: `PagedQuery` returning no rows
+
+Versions `26.9.5` and `26.9.6` had a bug where `PagedQuery` always returned an empty array in a rendered view, regardless of what was in the store: `update()` replaced the underlying `@Query` with a newly-constructed one on every call, and SwiftUI only installs a `Query`'s storage on values built during `init` — so the replacement's fetched results were always empty.
+
+The fix changes how the window grows: instead of rebuilding the `@Query`'s descriptor per page, `PagedQuery` now fetches up to a fixed `maxWindow` once and pages through that fetch client-side. This adds the new `maxWindow` parameter (see [Usage](#usage)) and means pagination has a ceiling — rows beyond `maxWindow` are invisible to the query — rather than being truly unbounded. Raise `maxWindow` for screens that need to page past the `500`-row default.
 
 ## Migrating from earlier versions
 

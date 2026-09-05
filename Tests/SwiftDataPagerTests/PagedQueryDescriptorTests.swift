@@ -16,8 +16,7 @@ final class PagedQueryTestItem {
     init(order: Int) { self.order = order }
 }
 
-/// Boundary-math coverage for the window+1 "peek row" trick `PagedQuery` uses to answer
-/// `hasReachedEnd` without a separate `fetchCount` query.
+/// Boundary-math coverage for `PagedQuery`'s fixed, `maxWindow`-capped fetch descriptor.
 ///
 /// This tests the descriptor-building logic directly against a plain, in-memory
 /// `ModelContext` — no `View`/`DynamicProperty` involved. True `@Query` reactivity (live
@@ -40,103 +39,110 @@ struct PagedQueryDescriptorTests {
         return context
     }
 
-    @Test("Fewer items than the window: no peek row, all items returned")
-    func fewerItemsThanWindow() throws {
+    @Test("Fewer items than maxWindow: every matching row is fetched")
+    func fewerItemsThanMaxWindow() throws {
         let context = try makeContext(itemCount: 3)
-        let window = 10
+        let maxWindow = 10
         let descriptor = PagedQuery<PagedQueryTestItem>.descriptor(
-            window: window,
+            maxWindow: maxWindow,
             predicate: nil,
             sortDescriptors: [SortDescriptor(\.order)]
         )
         let results = try context.fetch(descriptor)
 
         #expect(results.count == 3)
-        #expect(results.count <= window, "hasReachedEnd should read true")
-    }
 
-    @Test("Exactly window items: no peek row, hasReachedEnd is true")
-    func exactlyWindowItems() throws {
-        let context = try makeContext(itemCount: 10)
         let window = 10
-        let descriptor = PagedQuery<PagedQueryTestItem>.descriptor(
-            window: window,
-            predicate: nil,
-            sortDescriptors: [SortDescriptor(\.order)]
-        )
-        let results = try context.fetch(descriptor)
-
-        #expect(results.count == 10)
         #expect(results.count <= window, "hasReachedEnd should read true")
     }
 
-    @Test("More items than the window: the peek row is present, hasReachedEnd is false")
-    func moreItemsThanWindow() throws {
+    @Test("More items than maxWindow: the fetch is capped, further rows are invisible")
+    func moreItemsThanMaxWindow() throws {
         let context = try makeContext(itemCount: 25)
-        let window = 10
+        let maxWindow = 10
         let descriptor = PagedQuery<PagedQueryTestItem>.descriptor(
-            window: window,
+            maxWindow: maxWindow,
             predicate: nil,
             sortDescriptors: [SortDescriptor(\.order)]
         )
         let results = try context.fetch(descriptor)
 
-        #expect(results.count == window + 1, "the extra peek row should be fetched")
-        #expect(results.count > window, "hasReachedEnd should read false")
-        #expect(Array(results.prefix(window)).count == window, "wrappedValue trims the peek row")
+        #expect(results.count == maxWindow, "fetch is capped at maxWindow, not the true 25 rows")
+        #expect(Array(results.map(\.order)) == Array(0..<maxWindow))
     }
 
     @Test("Empty store: no items, hasReachedEnd is true")
     func emptyStore() throws {
         let context = try makeContext(itemCount: 0)
-        let window = 10
         let descriptor = PagedQuery<PagedQueryTestItem>.descriptor(
-            window: window,
+            maxWindow: 10,
             predicate: nil,
             sortDescriptors: []
         )
         let results = try context.fetch(descriptor)
 
         #expect(results.isEmpty)
+
+        let window = 10
         #expect(results.count <= window, "hasReachedEnd should read true")
     }
 
     @Test("Predicate excludes everything: empty result despite data being present")
     func predicateExcludesEverything() throws {
         let context = try makeContext(itemCount: 5)
-        let window = 10
         let predicate = #Predicate<PagedQueryTestItem> { $0.order > 1_000 }
         let descriptor = PagedQuery<PagedQueryTestItem>.descriptor(
-            window: window,
+            maxWindow: 10,
             predicate: predicate,
             sortDescriptors: []
         )
         let results = try context.fetch(descriptor)
 
         #expect(results.isEmpty)
+
+        let window = 10
         #expect(results.count <= window, "hasReachedEnd should read true")
     }
 
-    @Test("Growing the window reveals the next page without losing earlier rows")
+    @Test("Growing the window client-side reveals more of the same fetched rows")
     func growingWindowRevealsNextPage() throws {
         let context = try makeContext(itemCount: 25)
         let sort = [SortDescriptor<PagedQueryTestItem>(\.order)]
 
-        let firstDescriptor = PagedQuery<PagedQueryTestItem>.descriptor(
-            window: 10,
+        // The descriptor is built once, sized to maxWindow — it never changes as the window
+        // grows. Only the client-side `prefix(window)` changes between "pages".
+        let descriptor = PagedQuery<PagedQueryTestItem>.descriptor(
+            maxWindow: 20,
             predicate: nil,
             sortDescriptors: sort
         )
-        let firstPage = try context.fetch(firstDescriptor)
-        #expect(Array(firstPage.prefix(10)).map(\.order) == Array(0..<10))
+        let rawItems = try context.fetch(descriptor)
+        #expect(rawItems.count == 20, "fetch is capped at maxWindow")
 
-        let secondDescriptor = PagedQuery<PagedQueryTestItem>.descriptor(
-            window: 20,
+        let firstPage = Array(rawItems.prefix(10))
+        #expect(firstPage.map(\.order) == Array(0..<10))
+
+        let secondPage = Array(rawItems.prefix(20))
+        #expect(secondPage.map(\.order) == Array(0..<20))
+    }
+
+    @Test("hasReachedEnd semantics: rawItems.count <= window")
+    func hasReachedEndSemantics() throws {
+        let context = try makeContext(itemCount: 25)
+        let sort = [SortDescriptor<PagedQueryTestItem>(\.order)]
+        let maxWindow = 20
+        let descriptor = PagedQuery<PagedQueryTestItem>.descriptor(
+            maxWindow: maxWindow,
             predicate: nil,
             sortDescriptors: sort
         )
-        let secondPage = try context.fetch(secondDescriptor)
-        #expect(Array(secondPage.prefix(20)).map(\.order) == Array(0..<20))
-        #expect(secondPage.count == 21, "still one peek row beyond the new window")
+        let rawItems = try context.fetch(descriptor)
+        #expect(rawItems.count == maxWindow, "fetch capped below the true 25 rows")
+
+        // Below the ceiling: more of the fetched rows remain to reveal.
+        #expect(rawItems.count > 10, "hasReachedEnd should read false at window 10")
+
+        // At the ceiling: no further rows are visible, even though 25 rows truly exist.
+        #expect(rawItems.count <= maxWindow, "hasReachedEnd should read true once window reaches maxWindow")
     }
 }
