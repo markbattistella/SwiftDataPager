@@ -23,7 +23,11 @@ final class PagedQueryTestItem {
 /// `ModelContext` — no `View`/`DynamicProperty` involved. True `@Query` reactivity (live
 /// updates via `update()`) needs a rendered SwiftUI view and isn't covered here; see the
 /// README's testing note for that gap.
-@Suite("PagedQuery descriptor boundary math")
+///
+/// Runs serialized rather than Swift Testing's default parallel execution: each test creates
+/// its own in-memory `ModelContainer`, and concurrent `ModelContainer` creation is a known
+/// source of crashes in SwiftData's underlying store stack.
+@Suite("PagedQuery descriptor boundary math", .serialized)
 struct PagedQueryDescriptorTests {
     private func makeContext(itemCount: Int) throws -> ModelContext {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
