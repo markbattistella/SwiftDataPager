@@ -195,7 +195,8 @@ extension PagedQuery {
     ) -> Query<Model, [Model]> {
         if let animation {
             Query(descriptor, animation: animation)
-        } else {
+        }
+        else {
             Query(descriptor)
         }
     }
