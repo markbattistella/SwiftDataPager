@@ -26,7 +26,8 @@ import SwiftUI
 ///     fetchLimit: 20,
 ///     sortDescriptors: [.init(\MyModel.name)],
 ///     filterPredicate: #Predicate { $0.name.localizedStandardContains("data") },
-///     logger: .default
+///     logger: .default,
+///     animation: .default
 /// ) private var items: [MyModel]
 /// ```
 @MainActor
@@ -57,6 +58,10 @@ public struct PagedQuery<Model>: @MainActor DynamicProperty where Model: Persist
     /// Logging utility for pagination events.
     internal let logger: any PaginationLogger
 
+    /// The animation SwiftData applies when rows enter, leave, or move within the fetched
+    /// window. `nil` means no animation, matching `@Query`'s own default.
+    private let animation: Animation?
+
     /// The current list of loaded models.
     public var wrappedValue: [Model] { Array(rawItems.prefix(window)) }
 
@@ -68,7 +73,7 @@ public struct PagedQuery<Model>: @MainActor DynamicProperty where Model: Persist
     public var hasReachedEnd: Bool { rawItems.count <= window }
 
     /// The current pagination phase.
-    public var phase: Phase { hasReachedEnd ? .complete : .idle }
+    public var phase: PaginationPhase { hasReachedEnd ? .complete : .idle }
 }
 
 // MARK: - Init
@@ -82,16 +87,20 @@ extension PagedQuery {
     ///   - sortDescriptors: Sorting applied during fetch. Defaults to `empty`.
     ///   - filterPredicate: Optional filter to apply to results. Defaults to `nil`.
     ///   - logger: Logging configuration. Defaults to `.none`.
+    ///   - animation: The animation SwiftData applies when rows enter, leave, or move within the
+    ///     fetched window. Defaults to `nil` (no animation), matching `@Query`'s own default.
     public init(
         fetchLimit: Int = 10,
         sortDescriptors: [SortDescriptor<Model>] = [],
         filterPredicate: Predicate<Model>? = nil,
-        logger: PaginationLoggerConfig = .none
+        logger: PaginationLoggerConfig = .none,
+        animation: Animation? = nil
     ) {
         let pageSize = max(1, fetchLimit)
         self.pageSize = pageSize
         self.sortDescriptors = sortDescriptors
         self.filterPredicate = filterPredicate
+        self.animation = animation
         self._window = State(initialValue: pageSize)
 
         switch logger {
@@ -103,12 +112,13 @@ extension PagedQuery {
                 self.logger = customLogger
         }
 
-        self._rawItems = Query(
-            Self.descriptor(
+        self._rawItems = Self.makeQuery(
+            descriptor: Self.descriptor(
                 window: pageSize,
                 predicate: filterPredicate,
                 sortDescriptors: sortDescriptors
-            )
+            ),
+            animation: animation
         )
     }
 }
@@ -124,12 +134,13 @@ extension PagedQuery {
     /// re-render without visibility into `window`'s current, persisted value.
     public mutating func update() {
         _rawItems.update()
-        _rawItems = Query(
-            Self.descriptor(
+        _rawItems = Self.makeQuery(
+            descriptor: Self.descriptor(
                 window: window,
                 predicate: filterPredicate,
                 sortDescriptors: sortDescriptors
-            )
+            ),
+            animation: animation
         )
     }
 
@@ -172,5 +183,20 @@ extension PagedQuery {
         // separate `fetchCount` query.
         descriptor.fetchLimit = window + 1
         return descriptor
+    }
+
+    /// Builds the underlying `@Query`, applying `animation` only when one was supplied — `Query`
+    /// has no initialiser accepting an optional `Animation`, so `nil` must route to the
+    /// non-animating overload to preserve `@Query`'s own default behaviour.
+    @MainActor
+    static func makeQuery(
+        descriptor: FetchDescriptor<Model>,
+        animation: Animation?
+    ) -> Query<Model, [Model]> {
+        if let animation {
+            Query(descriptor, animation: animation)
+        } else {
+            Query(descriptor)
+        }
     }
 }

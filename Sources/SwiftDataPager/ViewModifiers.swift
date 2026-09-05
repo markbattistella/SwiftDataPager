@@ -55,6 +55,37 @@ extension View {
         }
     }
 
+    /// Triggers `loadMore()` when this view appears, for use as a single trailing sentinel after
+    /// a `ForEach` rather than attaching `onLoadMore(item:in:)` to every row.
+    ///
+    /// ```swift
+    /// ForEach(movies) { movie in
+    ///     MovieRow(movie: movie)
+    /// }
+    /// Color.clear
+    ///     .frame(height: 1)
+    ///     .paginationSentinel(in: $movies)
+    /// ```
+    ///
+    /// This runs one task for the whole list instead of one per visible row, and spares the
+    /// caller threading the binding into every cell.
+    ///
+    /// - Parameter paginated: The active `PagedQuery` managing pagination state and data.
+    /// - Returns: A `View` that runs a single task when it appears or the window grows.
+    public func paginationSentinel<Model: PersistentModel>(
+        in paginated: PagedQuery<Model>
+    ) -> some View {
+        self.task(id: paginated.wrappedValue.count) {
+            if canLoadMore(paginated) {
+                paginated.logger.log("paginationSentinel triggered loadMore().")
+                paginated.loadMore()
+            }
+            else {
+                paginated.logger.log("paginationSentinel appeared — already at end, skipping.")
+            }
+        }
+    }
+
     /// Triggers a paginated load based on a custom condition.
     ///
     /// Allows fine-grained control over when `loadMore()` should be triggered, for example:

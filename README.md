@@ -65,11 +65,14 @@ dependencies: [
   fetchLimit: 10,
   sortDescriptors: [SortDescriptor(\Movie.releaseDate, order: .reverse)],
   filterPredicate: #Predicate { $0.genre == "Action" },
-  logger: .default
+  logger: .default,
+  animation: .default
 ) var actionMovies: [Movie]
 ```
 
 `fetchLimit` is both the size of the first page and how much the window grows by on each `loadMore()` call.
+
+`animation` controls the animation SwiftData applies when rows enter, leave, or move within the fetched window — it's passed straight through to the underlying `@Query`. It defaults to `nil` (no animation), matching `@Query`'s own default, so existing call sites are unaffected.
 
 ## View Modifiers
 
@@ -85,6 +88,21 @@ ForEach(movies) { movie in
 ```
 
 `.onLoadMore(item:, in:)` works with any `PersistentModel` — there's no `Equatable` conformance to add. Position is tracked by `persistentModelID`.
+
+### Sentinel Loading
+
+`.onLoadMore(item:in:)` attaches one `.task` per row. If you'd rather run a single task for the whole list, place a trailing sentinel view after your `ForEach` instead:
+
+```swift
+ForEach(movies) { movie in
+    MovieRow(movie: movie)
+}
+Color.clear
+    .frame(height: 1)
+    .paginationSentinel(in: $movies)
+```
+
+This calls `loadMore()` whenever the sentinel appears and again each time the window grows, without threading the binding into every row.
 
 #### Threshold Loading
 
@@ -130,6 +148,8 @@ case .complete:
 ```
 
 `hasReachedEnd` is also available directly as a `Bool` if you don't need to switch over `phase`.
+
+`phase` returns `PaginationPhase`. The older name `Phase` is still available as a deprecated typealias for source compatibility.
 
 ## Logging
 
@@ -203,8 +223,9 @@ Demo pagination of `10000` records.
 SwiftDataPager's internals changed from a manual, offset-based snapshot fetch to a live `@Query`-backed window. This is a breaking change:
 
 - **Removed:** `isFetching`, `error`, `retry()`, `showFetching(in:)`, `onEmptyLoad(in:)`. Fetching is now synchronous and doesn't throw a recoverable error to the wrapper, so there's no in-flight state to show and nothing to retry — the first page is already loaded by the time your view's `body` runs.
-- **Replaced:** the internal `PaginationState` is now a public `Phase` enum (`.idle` / `.complete`), accessible via `$movies.phase`.
+- **Replaced:** the internal `PaginationState` is now a public `PaginationPhase` enum (`.idle` / `.complete`), accessible via `$movies.phase`. The prior name `Phase` remains as a deprecated typealias.
 - **Unchanged:** `@PagedQuery(fetchLimit:sortDescriptors:filterPredicate:logger:)`, `wrappedValue`, `loadMore()`, `reset()`, `hasReachedEnd`, `onLoadMore(item:in:)`, `onPaginationThreshold(threshold:item:in:)`, `onPaginationTrigger(item:in:when:)` all keep the same call sites — `onLoadMore`/`onPaginationThreshold` no longer require `Equatable` on your model.
+- **Added:** `@PagedQuery` now also takes an optional trailing `animation:` parameter, defaulting to `nil` — existing call sites keep compiling unchanged. A new `paginationSentinel(in:)` view modifier offers a one-task-for-the-whole-list alternative to `onLoadMore(item:in:)`.
 - **Toolchain:** now requires Swift 6.2 / Xcode 26 or later (previously Swift 6.0), due to an isolated-conformance requirement in the new implementation.
 
 ## Contributing

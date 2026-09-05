@@ -5,10 +5,13 @@
 //
 
 /// The current phase of a `PagedQuery`'s pagination window.
-public enum Phase: Equatable, Sendable {
+public enum PaginationPhase: Equatable, Sendable {
     /// More data may be available; `loadMore()` will grow the window.
     case idle
 
     /// The fetch window already covers every row matching the current predicate/sort.
     case complete
 }
+
+@available(*, deprecated, renamed: "PaginationPhase")
+public typealias Phase = PaginationPhase
