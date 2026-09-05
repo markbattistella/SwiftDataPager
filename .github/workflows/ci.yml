@@ -13,7 +13,7 @@ concurrency:
 jobs:
   swift:
     name: macOS
-    runs-on: macos-15
+    runs-on: macos-26
 
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +21,12 @@ jobs:
       - name: Build
         run: swift build
 
+      - name: Test
+        run: swift test
+
   simulator:
     name: ${{ matrix.name }}
-    runs-on: macos-15
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
@@ -53,7 +56,7 @@ jobs:
 
   catalyst:
     name: Mac Catalyst
-    runs-on: macos-15
+    runs-on: macos-26
 
     steps:
       - uses: actions/checkout@v4
