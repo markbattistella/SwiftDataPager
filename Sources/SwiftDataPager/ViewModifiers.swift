@@ -8,7 +8,6 @@ import SwiftUI
 import SwiftData
 
 extension View {
-
     /// A helper that checks if the paginated query is ready to load more items.
     ///
     /// - Parameter paginated: The active `PagedQuery` instance.
@@ -30,24 +29,28 @@ extension View {
         in paginated: PagedQuery<Model>
     ) -> some View {
         self.task(id: item.persistentModelID) {
-
             // Only proceed if the current item is the last one.
             guard paginated.wrappedValue.last?.persistentModelID == item.persistentModelID else {
                 return
             }
 
             if canLoadMore(paginated) {
-                paginated.logger.log("""
-                onLoadMore triggered for last item:
-                \(item.persistentModelID)
-                """)
+                paginated.logger.log(
+                    """
+                    onLoadMore triggered for last item:
+                    \(item.persistentModelID)
+                    """
+                )
                 paginated.loadMore()
-            } else {
-                paginated.logger.log("""
-                onLoadMore condition met for item:
-                \(item.persistentModelID)
-                But skipping fetch — already at end.
-                """)
+            }
+            else {
+                paginated.logger.log(
+                    """
+                    onLoadMore condition met for item:
+                    \(item.persistentModelID)
+                    But skipping fetch — already at end.
+                    """
+                )
             }
         }
     }
@@ -68,22 +71,26 @@ extension View {
         when condition: @escaping (_ item: Model, _ allItems: [Model]) -> Bool
     ) -> some View {
         self.task(id: item.persistentModelID) {
-
             // Evaluate the custom condition.
             guard condition(item, paginated.wrappedValue) else { return }
 
             if canLoadMore(paginated) {
-                paginated.logger.log("""
-                onPaginationTrigger condition met for item:
-                \(item.persistentModelID)
-                """)
+                paginated.logger.log(
+                    """
+                    onPaginationTrigger condition met for item:
+                    \(item.persistentModelID)
+                    """
+                )
                 paginated.loadMore()
-            } else {
-                paginated.logger.log("""
-                onPaginationTrigger condition met for item:
-                \(item.persistentModelID)
-                But skipping fetch — already at end.
-                """)
+            }
+            else {
+                paginated.logger.log(
+                    """
+                    onPaginationTrigger condition met for item:
+                    \(item.persistentModelID)
+                    But skipping fetch — already at end.
+                    """
+                )
             }
         }
     }
@@ -102,20 +109,22 @@ extension View {
         item: Model,
         in paginated: PagedQuery<Model>
     ) -> some View {
-
         // Ensure threshold is at least 1
         let effectiveThreshold = max(1, threshold)
 
         return self.onPaginationTrigger(item: item, in: paginated) { currentItem, allItems in
-
             // Check if there are any items and if we can find the index of the current item.
-            guard !allItems.isEmpty, let index = allItems.firstIndex(where: {
-                $0.persistentModelID == currentItem.persistentModelID
-            }) else {
-                paginated.logger.log("""
+            guard !allItems.isEmpty,
+                let index = allItems.firstIndex(where: {
+                    $0.persistentModelID == currentItem.persistentModelID
+                })
+            else {
+                paginated.logger.log(
+                    """
                     onPaginationThreshold could not find index for item:
                     \(item.persistentModelID)
-                    """)
+                    """
+                )
                 return false
             }
 
@@ -123,12 +132,14 @@ extension View {
             let shouldLoad = index >= targetIndex
 
             if shouldLoad {
-                paginated.logger.log("""
-                onPaginationThreshold condition met:
-                 - item index \(index) >= target index \(targetIndex)
-                 - count: \(allItems.count)
-                 - threshold: \(effectiveThreshold)
-                """)
+                paginated.logger.log(
+                    """
+                    onPaginationThreshold condition met:
+                     - item index \(index) >= target index \(targetIndex)
+                     - count: \(allItems.count)
+                     - threshold: \(effectiveThreshold)
+                    """
+                )
             }
 
             return shouldLoad
